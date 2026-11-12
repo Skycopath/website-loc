@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>No-Website Business Finder</title>
+<style>
+  :root {
+    --bg: #f6f5f2;
+    --card: #ffffff;
+    --border: #e2ded6;
+    --text: #2c2c2a;
+    --muted: #6b6a66;
+    --accent: #185fa5;
+    --accent-dark: #0c447c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    padding: 24px;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 500; margin-bottom: 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 20px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; margin-top: 12px; }
+  label:first-child { margin-top: 0; }
+  input, select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    background: #fff;
+    color: var(--text);
+  }
+  .row { display: flex; gap: 12px; }
+  .row > div { flex: 1; }
+  button {
+    margin-top: 16px;
+    padding: 10px 16px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:hover { background: var(--accent-dark); }
+  button:disabled { background: #b4b2a9; cursor: not-allowed; }
+  button.secondary {
+    background: #fff;
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  button.secondary:hover { background: #f0efe9; }
+  .status { font-size: 13px; color: var(--muted); margin-top: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  a { color: var(--accent); text-decoration: none; }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; }
+  .note {
+    font-size: 12px;
+    color: var(--muted);
+    background: #f0efe9;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-top: 14px;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>No-website business finder</h1>
+  <div class="sub">Finds businesses on Google Maps with no listed website. You look up the coordinates manually for email/contact info.</div>
+
+  <div class="card">
+    <label for="apiKey">Google Places API key</label>
+    <input id="apiKey" type="password" placeholder="Paste your API key (kept only in this browser tab)" autocomplete="off">
+
+    <div class="row">
+      <div>
+        <label for="query">Business type / keyword</label>
+        <input id="query" type="text" placeholder="e.g. plumbers, hair salons, auto repair">
+      </div>
+      <div>
+        <label for="location">Location</label>
+        <input id="location" type="text" placeholder="e.g. Lekki, Lagos, Nigeria">
+      </div>
+    </div>
+
+    <button id="searchBtn">Search</button>
+    <button id="moreBtn" class="secondary" style="display:none;">Load more results</button>
+    <div class="status" id="status"></div>
+
+    <div class="note">
+      Uses the official Google Places API (New) — not a scraper, so it won't get IP-banned. You need your own API key from the
+      <a href="https://console.cloud.google.com/google/maps-apis" target="_blank">Google Cloud Console</a> with "Places API (New)" enabled and billing set up.
+      Google gives $200/month free credit; a Text Search costs $0.032/call, so this is essentially free at normal volumes.
+      The API only returns coordinates, name, and phone — email is never public, which is why the manual coordinate lookup step stays on you.
+    </div>
+  </div>
+
+  <div class="card" id="resultsCard" style="display:none;">
+    <div class="toolbar">
+      <div id="countLabel" style="font-size:14px;"></div>
+      <button id="exportBtn" class="secondary">Export CSV</button>
+    </div>
+    <table id="resultsTable">
+      <thead><tr><th>Name</th><th>Phone</th><th>Address</th><th>Coordinates</th><th>Map</th></tr></thead>
+      <tbody id="resultsBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+let results = [];
+let nextPageToken = null;
+let lastQuery = "";
+
+const statusEl = document.getElementById('status');
+const searchBtn = document.getElementById('searchBtn');
+const moreBtn = document.getElementById('moreBtn');
+const resultsCard = document.getElementById('resultsCard');
+const resultsBody = document.getElementById('resultsBody');
+const countLabel = document.getElementById('countLabel');
+
+function setStatus(msg) { statusEl.textContent = msg; }
+
+async function runSearch(isMore) {
+  const apiKey = document.getElementById('apiKey').value.trim();
+  const query = document.getElementById('query').value.trim();
+  const location = document.getElementById('location').value.trim();
+
+  if (!apiKey) { setStatus('Enter your API key first.'); return; }
+  if (!isMore && (!query || !location)) { setStatus('Enter both a business type and a location.'); return; }
+
+  searchBtn.disabled = true;
+  moreBtn.disabled = true;
+  setStatus(isMore ? 'Loading more…' : 'Searching…');
+
+  const body = isMore
+    ? { textQuery: lastQuery, pageToken: nextPageToken }
+    : { textQuery: `${query} in ${location}` };
+
+  if (!isMore) lastQuery = body.textQuery;
+
+  try {
+    const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.nationalPhoneNumber,places.internationalPhoneNumber,places.formattedAddress,places.location,places.websiteUri,nextPageToken'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!resp.ok) {
+      const err = await resp.text();
+      setStatus(`Request failed (${resp.status}). Check your API key / billing. Details: ${err.slice(0,200)}`);
+      searchBtn.disabled = false;
+      moreBtn.disabled = false;
+      return;
+    }
+
+    const data = await resp.json();
+    const places = data.places || [];
+    nextPageToken = data.nextPageToken || null;
+
+    const filtered = places.filter(p => !p.websiteUri);
+    results = isMore ? results.concat(filtered) : filtered;
+
+    renderResults();
+    setStatus(`Found ${places.length} total, ${filtered.length} without a website on this page. ${results.length} collected so far.`);
+    moreBtn.style.display = nextPageToken ? 'inline-block' : 'none';
+  } catch (e) {
+    setStatus('Network error: ' + e.message);
+  }
+
+  searchBtn.disabled = false;
+  moreBtn.disabled = false;
+}
+
+function renderResults() {
+  resultsCard.style.display = results.length ? 'block' : 'none';
+  countLabel.textContent = `${results.length} businesses without a website`;
+  resultsBody.innerHTML = results.map(p => {
+    const name = p.displayName ? p.displayName.text : '(no name)';
+    const phone = p.nationalPhoneNumber || p.internationalPhoneNumber || '—';
+    const addr = p.formattedAddress || '—';
+    const lat = p.location ? p.location.latitude.toFixed(6) : '';
+    const lng = p.location ? p.location.longitude.toFixed(6) : '';
+    const coords = lat && lng ? `${lat}, ${lng}` : '—';
+    const mapUrl = lat && lng ? `https://www.google.com/maps/search/?api=1&query=${lat},${lng}` : '#';
+    return `<tr>
+      <td>${escapeHtml(name)}</td>
+      <td>${escapeHtml(phone)}</td>
+      <td>${escapeHtml(addr)}</td>
+      <td>${coords}</td>
+      <td><a href="${mapUrl}" target="_blank">Open</a></td>
+    </tr>`;
+  }).join('');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function exportCsv() {
+  const rows = [['Name','Phone','Address','Latitude','Longitude']];
+  results.forEach(p => {
+    rows.push([
+      p.displayName ? p.displayName.text : '',
+      p.nationalPhoneNumber || p.internationalPhoneNumber || '',
+      p.formattedAddress || '',
+      p.location ? p.location.latitude : '',
+      p.location ? p.location.longitude : ''
+    ]);
+  });
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'businesses_no_website.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+searchBtn.addEventListener('click', () => runSearch(false));
+moreBtn.addEventListener('click', () => runSearch(true));
+document.getElementById('exportBtn').addEventListener('click', exportCsv);
+</script>
+</body>
+</html>
